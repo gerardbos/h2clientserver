@@ -620,10 +620,10 @@ static int handle_response_data(struct h2client_connection_handle * handle, cons
 	}
 
 	if(flags & H2_FLAG_RECEIVE_FRAME_COMPLETE){
-		log(INFO, TAG, "frame completed");
+		//log(INFO, TAG, "frame completed");
 	}
 	if(flags & H2_FLAG_STREAM_CLOSE){
-		log(INFO, TAG, "stream closed");
+		//log(INFO, TAG, "stream closed");
 		xSemaphoreGive(handle->current_request->wait_semaphore);
 	}
 

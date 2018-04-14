@@ -12,6 +12,10 @@ Simple h2client.
 - Uses single task to manage all (open) connections
 - Can keep up to CONFIG_H2CLIENT_CONCURRENT_CONNECTIONS open at the same time
 
+### Open items
+- Set/configure the allowed certificates on the server side
+- Add client certificate support
+
 ### Example
 
 ```c
@@ -29,6 +33,4 @@ void main(){
 
 ## Server
 In progress
-
-## Open items
 
