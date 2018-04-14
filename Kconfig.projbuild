@@ -1,0 +1,11 @@
+menu "h2 Client/Server configuration"
+
+config H2CLIENT_CONCURRENT_CONNECTIONS
+	int "h2 client concurrent connections"
+		default 2
+		help
+			The maximum number of concurrent connections that are kept open for the
+			h2 client.
+
+
+endmenu
