@@ -2,7 +2,18 @@
 
 #include <string.h>
 
-static const char * h2_default_port = "443";
+static const char h2_default_port[] = "443";
+
+// protocol const declarations
+const char h2_header_path[] = ":path";
+const char h2_header_method[] = ":method";
+const char h2_header_scheme[] = ":scheme";
+const char h2_header_authority[] = ":authority";
+
+static const char h2_method_get[] = "GET";
+static const char h2_method_put[] = "PUT";
+static const char h2_method_post[] = "POST";
+
 
 /**
  * Get the string representation of method m
@@ -11,16 +22,16 @@ static const char * h2_default_port = "443";
  */
 const char * h2_method_to_string(enum h2_method m)
 {
-	char * r = NULL;
+	const char * r = NULL;
 	switch(m){
 		case H2_GET:
-			r = "GET";
+			r = h2_method_get;
 			break;
 		case H2_PUT:
-			r = "PUT";
+			r = h2_method_put;
 			break;
 		case H2_POST:
-			r = "POST";
+			r = h2_method_post;
 			break;
 		default:
 			break;

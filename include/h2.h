@@ -44,6 +44,13 @@ struct h2_parsed_url{
 	unsigned int service_length;
 };
 
+
+// protocol const declarations
+extern const char h2_header_path[6];
+extern const char h2_header_method[8];
+extern const char h2_header_scheme[8];
+extern const char h2_header_authority[11];
+
 const char * h2_method_to_string(enum h2_method m);
 bool h2_parse_url(const char * url, struct h2_parsed_url * output);
 

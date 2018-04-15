@@ -173,8 +173,7 @@ int h2client_initialize()
 		return H2_ERROR_NO_MEM;
 	}else{
 		// Tell SSL that we will support h2 protocol
-		unsigned char vector[] = "\x02h2";
-		SSL_CTX_set_alpn_protos(ssl_ctx, vector, strlen((char *)vector));
+		SSL_CTX_set_alpn_protos(ssl_ctx, (unsigned char *)NGHTTP2_PROTO_ALPN, NGHTTP2_PROTO_ALPN_LEN);
 	}
 
 	// initialize nghttp structures used for all connections
@@ -426,10 +425,10 @@ bool request(struct h2client_connection_handle * handle, struct h2client_request
 	// make headers 1 item longer for the content type, if available
 	unsigned int hdrs_items = 4;
 	nghttp2_nv hdrs[5] = {
-		make_nv(":method", m, strlen(m)),
-		make_nv(":scheme", handle->server.protocol, strlen(handle->server.protocol)),
-		make_nv(":authority", handle->server.host, strlen(handle->server.host)),
-		make_nv(":path", request->path, strlen(request->path))
+		make_nv(h2_header_method, m, strlen(m)),
+		make_nv(h2_header_scheme, handle->server.protocol, strlen(handle->server.protocol)),
+		make_nv(h2_header_authority, handle->server.host, strlen(handle->server.host)),
+		make_nv(h2_header_path, request->path, strlen(request->path))
 	};
 
 	if(request->requestbody.content_type != NULL){
