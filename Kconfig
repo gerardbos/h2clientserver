@@ -7,5 +7,4 @@ config H2CLIENT_CONCURRENT_CONNECTIONS
 			The maximum number of concurrent connections that are kept open for the
 			h2 client.
 
-
 endmenu

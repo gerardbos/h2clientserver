@@ -12,7 +12,7 @@
 
 #include "h2log.h"
 
-#define H2CLIENT_TASK_STACKSIZE		(1024 * 64) 	// Stack size in words for the task (http_task) that handles a connection
+#define H2CLIENT_TASK_STACKSIZE		(1024 * 18) 	// Stack size in words for the task (http_task) that handles a connection (>16KB required for mbedtls)
 #define H2CLIENT_TASK_PRIORITY		5
 #define H2CLIENT_REQUEST_QUEUE_LENGTH	5
 
@@ -20,32 +20,11 @@
 
 #define H2CLIENT_TIMEOUT_ACQ_SEMAPHORE	500		// Timeout to wait for acquiring a lock to the connection bookkeeping
 
-#define H2CLIENT_SEND_BLOCK_SIZE	1024
-
 // Convert ms to ticks (round down)
 #define ms_to_ticks(d_ms)		(TickType_t)(d_ms / portTICK_PERIOD_MS)
 
 // Minimum calculation define
 #define min(a, b)			(a < b?a:b)
-
-// Create name value pairs where the value is not a string for nghttp2
-#define make_nv(name, value, valuelen) { \
-	(uint8_t *)name, (uint8_t *)value, sizeof(name) - 1, valuelen, NGHTTP2_NV_FLAG_NONE \
-}
-
-// Create name value pairs of strings for nghttp2
-#define assign_nv(ptr, name_, value_, valuelen_)  { \
-	(ptr)->name = (uint8_t *)name_; \
-	(ptr)->value = (uint8_t *)value_; \
-	(ptr)->namelen = sizeof(name_) - 1; \
-	(ptr)->valuelen = valuelen_; \
-	(ptr)->flags = NGHTTP2_NV_FLAG_NONE; \
-}
-
-// Create name value pairs of strings for nghttp2
-#define make_nv2(name, value) { \
-	(uint8_t *)name, (uint8_t *)value, sizeof(name) - 1, sizeof(value) - 1,	NGHTTP2_NV_FLAG_NONE \
-}
 
 // Initialize the request_internal structure
 #define h2client_request_internal_initialize()	{ \
@@ -66,11 +45,10 @@ struct server{
 };
 
 struct h2client_connection_handle{
-	int sockfd;
-	SSL * ssl;
+	struct h2_connection conn;
+
 	nghttp2_session * h2_session;
 
-	unsigned int id;
 	enum connection_state state;
 	struct server server;
 	SemaphoreHandle_t semaphore;
@@ -89,6 +67,10 @@ struct h2client_request_internal{
 	bool error;
 };
 
+// generic functions, divided over h2client and h2server (but not made externally available)
+extern ssize_t h2_nghttp2_callback_recv(nghttp2_session * session, uint8_t * buf, size_t length, int flags, void * user_data);
+extern ssize_t h2_nghttp2_callback_send(nghttp2_session * session, const uint8_t * data, size_t length, int flags, void * user_data);
+
 // Local function definitions
 static void task(void *args); // task function
 static struct h2client_connection_handle * request_new_connection(const struct h2_parsed_url * url);
@@ -102,12 +84,10 @@ static bool connect_ssl(struct h2client_connection_handle * handle);
 static bool connect_h2(struct h2client_connection_handle * handle);
 
 // handler function
-static bool handle_h2(struct h2client_connection_handle * handle);
+static bool h2client_handle(struct h2client_connection_handle * handle);
 
 // nghttp2 callback functions
-static ssize_t callback_send(nghttp2_session * session, const uint8_t * data, size_t length, int flags, void * user_data);
 //static int callback_send_data(nghttp2_session * session, nghttp2_frame * frame, const uint8_t * framehd, size_t length, nghttp2_data_source * source, void * user_data);
-static ssize_t callback_recv(nghttp2_session * session, uint8_t * buf, size_t length, int flags, void * user_data);
 static int callback_on_frame_recv(nghttp2_session * session, const nghttp2_frame * frame, void * user_data);
 //static int callback_on_invalid_frame_recv(nghttp2_session * session, const nghttp2_frame * frame, int lib_error_code, void * user_data);
 static int callback_on_data_chunk_recv(nghttp2_session * session, uint8_t flags, int32_t stream_id, const uint8_t * data, size_t len, void * user_data);
@@ -161,6 +141,7 @@ static nghttp2_session_callbacks * nghttp2_callbacks = NULL;
 
 /**
  * Initialize h2
+ * @return H2_ERROR_OK if no error occurred, otherwise an H2_ERROR code
  */
 int h2client_initialize()
 {
@@ -178,8 +159,8 @@ int h2client_initialize()
 
 	// initialize nghttp structures used for all connections
 	nghttp2_session_callbacks_new(&nghttp2_callbacks);
-	nghttp2_session_callbacks_set_send_callback(nghttp2_callbacks, callback_send);
-	nghttp2_session_callbacks_set_recv_callback(nghttp2_callbacks, callback_recv);
+	nghttp2_session_callbacks_set_send_callback(nghttp2_callbacks, h2_nghttp2_callback_send);
+	nghttp2_session_callbacks_set_recv_callback(nghttp2_callbacks, h2_nghttp2_callback_recv);
 	//nghttp2_session_callbacks_set_on_frame_send_callback(nghttp2_callbacks, callback_on_frame_send);
 	nghttp2_session_callbacks_set_on_frame_recv_callback(nghttp2_callbacks, callback_on_frame_recv);
 	nghttp2_session_callbacks_set_on_stream_close_callback(nghttp2_callbacks, callback_on_stream_close);
@@ -199,7 +180,7 @@ int h2client_initialize()
 			return H2_ERROR_NO_MEM;
 		}
 		// set initial socket
-		handle->sockfd = -1;
+		handle->conn.sockfd = -1;
 
 		// set last_used to 0
 		handle->last_used = 0;
@@ -335,7 +316,7 @@ bool h2client_do_request(struct h2client_request * request)
  * Do a "forced" disconnect of the connection to server "server_url"
  * @param protocol The protocol string
  * @param host The host string
- * @param ser
+ * @param service The service of the connection (port)
  * @return true if disconnect was successfull
  */
 bool h2client_disconnect(const char * protocol, const char * host, const char * service)
@@ -349,7 +330,9 @@ bool h2client_disconnect(const char * protocol, const char * host, const char * 
 	return false;
 }
 
-// Internal functions
+/**
+ * Internal functions
+ */
 
 /**
  * h2 connection and request handler task
@@ -366,11 +349,11 @@ static void task(void *args)
 					case CONN_CONFIGURED:
 						// do connect
 						{
-							if(connect_socket(&handle->server, &handle->sockfd) && connect_ssl(handle) && connect_h2(handle)){
-								log(INFO, TAG, "Connection %u: Connected", handle->id);
+							if(connect_socket(&handle->server, &handle->conn.sockfd) && connect_ssl(handle) && connect_h2(handle)){
+								log(INFO, TAG, "Connection %u: Connected", handle->conn.id);
 								handle->state = CONN_CONNECTED;
 							}else{
-								log(ERROR, TAG, "Connection %u: Error setting up socket (fd: %d) or SSL", handle->id, handle->sockfd);
+								log(ERROR, TAG, "Connection %u: Error setting up socket (fd: %d) or SSL", handle->conn.id, handle->conn.sockfd);
 								free_connection_handle(handle);
 							}
 						}
@@ -379,9 +362,9 @@ static void task(void *args)
 						// handle requests
 						//log(INFO, TAG, "Connection %d: current_request: 0x%x", handle->id, (unsigned int)handle->current_request);
 						if(handle->current_request != NULL){
-							if(!handle_h2(handle)){
+							if(!h2client_handle(handle)){
 								// Error in send or receive, close and cleanup connection
-								log(ERROR, TAG, "Connection %u: Error in send or receive", handle->id);
+								log(ERROR, TAG, "Connection %u: Error in send or receive", handle->conn.id);
 								free_connection_handle(handle);
 							}
 						}else{
@@ -390,7 +373,7 @@ static void task(void *args)
 							if(xQueueReceive(handle->request_queue, &(handle->current_request), 0)){
 								// new item retrieved
 								log(INFO, TAG, "Connection %u: [%s] %s",
-										handle->id,
+										handle->conn.id,
 										h2_method_to_string(handle->current_request->original_request->method),
 										handle->current_request->original_request->path);
 
@@ -402,12 +385,12 @@ static void task(void *args)
 					case CONN_EMPTY:
 						break;
 					default:
-						log(ERROR, TAG, "Connection %u: Unknown state (%d)", handle->id, handle->state);
+						log(ERROR, TAG, "Connection %u: Unknown state (%d)", handle->conn.id, handle->state);
 						break;
 				}
 				xSemaphoreGive(handle->semaphore);
 			}else{
-				log(ERROR, TAG, "Connection %u: Error obtaining semaphore", handle->id);
+				log(ERROR, TAG, "Connection %u: Error obtaining semaphore", handle->conn.id);
 			}
 		}
 		vTaskDelay(2);
@@ -418,6 +401,12 @@ static void task(void *args)
  * Requests
  */
 
+/**
+ * Prepare and submit a request
+ * @param handle The connection handle for this request
+ * @param request The client request structure defining the request
+ * @return true if the request was prepared and submitted without error.
+ */
 bool request(struct h2client_connection_handle * handle, struct h2client_request * request)
 {
 	const char * m = h2_method_to_string(request->method);
@@ -425,14 +414,14 @@ bool request(struct h2client_connection_handle * handle, struct h2client_request
 	// make headers 1 item longer for the content type, if available
 	unsigned int hdrs_items = 4;
 	nghttp2_nv hdrs[5] = {
-		make_nv(h2_header_method, m, strlen(m)),
-		make_nv(h2_header_scheme, handle->server.protocol, strlen(handle->server.protocol)),
-		make_nv(h2_header_authority, handle->server.host, strlen(handle->server.host)),
-		make_nv(h2_header_path, request->path, strlen(request->path))
+		h2_make_nv(h2_header_method, sizeof(h2_header_method) - 1, m, strlen(m)),
+		h2_make_nv(h2_header_scheme, sizeof(h2_header_scheme) - 1, handle->server.protocol, strlen(handle->server.protocol)),
+		h2_make_nv(h2_header_authority, sizeof(h2_header_authority) - 1, handle->server.host, strlen(handle->server.host)),
+		h2_make_nv(h2_header_path, sizeof(h2_header_path) - 1, request->path, strlen(request->path))
 	};
 
 	if(request->requestbody.content_type != NULL){
-		assign_nv(&hdrs[hdrs_items++], "content-type", request->requestbody.content_type, strlen(request->requestbody.content_type));
+		h2_assign_nv(&hdrs[hdrs_items++], h2_header_contenttype, sizeof(h2_header_contenttype) - 1, request->requestbody.content_type, strlen(request->requestbody.content_type));
 	}
 
 	if(request->method == H2_GET){
@@ -443,15 +432,15 @@ bool request(struct h2client_connection_handle * handle, struct h2client_request
 		p.source.ptr = NULL; // not set, is already available in the handle->current_request (user_data)
 		stream_id = nghttp2_submit_request(handle->h2_session, NULL, hdrs, hdrs_items, &p, NULL);
 	}else{
-		log(ERROR, TAG, "Connection %u: Unknown http2 method: %d", handle->id, request->method);
+		log(ERROR, TAG, "Connection %u: Unknown http2 method: %d", handle->conn.id, request->method);
 	}
 
 	if(stream_id < 0){
-		log(ERROR, TAG, "Connection %u: Error prepping headers", handle->id);
+		log(ERROR, TAG, "Connection %u: Error prepping headers", handle->conn.id);
 		return false;
 	}
 
-	log(INFO, TAG, "Connection %u: stream id %d", handle->id, stream_id);
+	log(INFO, TAG, "Connection %u: stream id %d", handle->conn.id, stream_id);
 	handle->current_request->h2_stream_id = stream_id;
 	return true;
 }
@@ -507,49 +496,49 @@ err_addrinfo:
 /**
  * Setup SSL connection
  * Note that the sockfd of the handle should be set/connected
- * @param handle
+ * @param handle Connection handle
  * @return true if ssl negotiation is ok
  */
 static bool connect_ssl(struct h2client_connection_handle * handle)
 {
 	int r, flags;
 
-	handle->ssl = SSL_new(ssl_ctx);
-	if(handle->ssl == NULL){
+	handle->conn.ssl = SSL_new(ssl_ctx);
+	if(handle->conn.ssl == NULL){
 		return false;
 	}
 
-	SSL_set_tlsext_host_name(handle->ssl, handle->server.host);
-	SSL_set_fd(handle->ssl, handle->sockfd);
-	r = SSL_connect(handle->ssl);
+	SSL_set_tlsext_host_name(handle->conn.ssl, handle->server.host);
+	SSL_set_fd(handle->conn.ssl, handle->conn.sockfd);
+	r = SSL_connect(handle->conn.ssl);
 	if(r < 1){
-		int error = SSL_get_error(handle->ssl, r);
-		log(INFO, TAG, "Connection %u: SSL_connect() failed (return: %d, error: %d)", handle->id, r, error);
-		SSL_free(handle->ssl);
-		handle->ssl = NULL;
+		int error = SSL_get_error(handle->conn.ssl, r);
+		log(INFO, TAG, "Connection %u: SSL_connect() failed (return: %d, error: %d)", handle->conn.id, r, error);
+		SSL_free(handle->conn.ssl);
+		handle->conn.ssl = NULL;
 		return false;
 	}
 
-	flags = fcntl(handle->sockfd, F_GETFL, 0);
-	fcntl(handle->sockfd, F_SETFL, flags | O_NONBLOCK);
+	flags = fcntl(handle->conn.sockfd, F_GETFL, 0);
+	fcntl(handle->conn.sockfd, F_SETFL, flags | O_NONBLOCK);
 
 	return true;
 }
 
 /**
  * Setup http2 connection
- * @param handle
+ * @param handle Connection handle
  * @return true if ssl negotiation is ok
  */
 static bool connect_h2(struct h2client_connection_handle * handle)
 {
 	if(nghttp2_session_client_new(&handle->h2_session, nghttp2_callbacks, handle) != 0){
-		log(ERROR, TAG, "Connecion %d: Unable to start new session", handle->id);
+		log(ERROR, TAG, "Connecion %d: Unable to start new session", handle->conn.id);
 		return false;
 	}
 
 	if(nghttp2_submit_settings(handle->h2_session, NGHTTP2_FLAG_NONE, NULL, 0) != 0){
-		log(ERROR, TAG, "Connection %d: Error submitting session", handle->id);
+		log(ERROR, TAG, "Connection %d: Error submitting session", handle->conn.id);
 		nghttp2_session_del(handle->h2_session);
 		return false;
 	}
@@ -566,17 +555,17 @@ static bool connect_h2(struct h2client_connection_handle * handle)
  * @param handle
  * @return false if an error occurs
  */
-static bool handle_h2(struct h2client_connection_handle * handle)
+static bool h2client_handle(struct h2client_connection_handle * handle)
 {
 	int r;
 
 	if((r = nghttp2_session_send(handle->h2_session)) != 0){
-		log(ERROR, TAG, "Connection %d: Send failed (error %d)", handle->id, r);
+		log(ERROR, TAG, "Connection %d: Send failed (error %d)", handle->conn.id, r);
 		return false;
 	}
 
 	if((r = nghttp2_session_recv(handle->h2_session)) != 0){
-		log(ERROR, TAG, "Connection %d: Receive failed (error %d)", handle->id, r);
+		log(ERROR, TAG, "Connection %d: Receive failed (error %d)", handle->conn.id, r);
 		return false;
 	}
 	return true;
@@ -584,7 +573,7 @@ static bool handle_h2(struct h2client_connection_handle * handle)
 
 
 /**
- * Handle HTTP2 response data
+ * HTTP2 response data handler or callback wrapper (depending on how to handle the data)
  * @return This function shall return 0 (see nghttp2 documentation)
  */
 static int handle_response_data(struct h2client_connection_handle * handle, const char * data, size_t length, int flags)
@@ -631,7 +620,7 @@ static int handle_response_data(struct h2client_connection_handle * handle, cons
 }
 
 /**
- * Handle HTTP2 request data
+ * HTTP2 request data handler or callback wrapper (depending on how to handle the data)
  */
 static ssize_t handle_request_data(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data)
 {
@@ -673,71 +662,6 @@ static ssize_t handle_request_data(nghttp2_session *session, int32_t stream_id, 
  * nghttp2 callback functions
  */
 
-/**
- * Send data to the receiving end
- * @param session
- * @param data
- * @param length
- * @param flags
- * @param user_data A pointer the the h2client_connection_handle structure
- */
-static ssize_t callback_send(nghttp2_session * session, const uint8_t * data, size_t length, int flags, void * user_data)
-{
-	int copied_bytes = 0;
-	struct h2client_connection_handle * handle = user_data;
-
-	while(copied_bytes < (length - 1)){
-		int chunk_size =
-			(length - copied_bytes) > H2CLIENT_SEND_BLOCK_SIZE?H2CLIENT_SEND_BLOCK_SIZE:(length - copied_bytes);
-		int copied_tmp = SSL_write(handle->ssl, data + copied_bytes, chunk_size);
-		if(copied_tmp <= 0){
-			int err = SSL_get_error(handle->ssl, copied_tmp);
-
-			if(copied_bytes > 0)
-				return copied_bytes;
-
-			if (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ)
-				return NGHTTP2_ERR_WOULDBLOCK;
-
-			log(INFO, TAG, "Connection %d: SSL_write error %d", handle->id, err);
-			return  NGHTTP2_ERR_CALLBACK_FAILURE;
-		}else{
-			copied_bytes += copied_tmp;
-		}
-	}
-
-	return copied_bytes;
-}
-
-/**
- * Receive the data from the server
- * @param session
- * @param buf
- * @param length
- * @param flags
- * @param user_data A pointer to the h2client_connection_handle structure
- */
-static ssize_t callback_recv(nghttp2_session * session, uint8_t * buf, size_t length, int flags, void * user_data)
-{
-	struct h2client_connection_handle * handle = user_data;
-	int copied_bytes = SSL_read(handle->ssl, buf, (int)length);
-
-	if(copied_bytes < 0){
-		int err = SSL_get_error(handle->ssl, copied_bytes);
-
-		if (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ)
-			return NGHTTP2_ERR_WOULDBLOCK;
-
-		log(INFO, TAG, "Connection %d: SSL_read error %d", handle->id, err);
-		return NGHTTP2_ERR_CALLBACK_FAILURE;
-	}else if(copied_bytes == 0){
-		log(INFO, TAG, "Connection %d: read EOF", handle->id);
-		return NGHTTP2_ERR_EOF;
-	}
-
-	return copied_bytes;
-}
-
 /*
 static int callback_on_frame_send(nghttp2_session * session, const nghttp2_frame * frame, void * user_data)
 {
@@ -756,6 +680,10 @@ static int callback_on_frame_send(nghttp2_session * session, const nghttp2_frame
 }
 */
 
+/**
+ * Callback on a complete frame received
+ * This function is used to finish up the response data retrieval
+ */
 static int callback_on_frame_recv(nghttp2_session * session, const nghttp2_frame * frame, void * user_data)
 {
 	struct h2client_connection_handle * handle = user_data;
@@ -777,6 +705,10 @@ static int callback_on_frame_recv(nghttp2_session * session, const nghttp2_frame
 	return 0;
 }
 
+/**
+ * Callback on a retrieved data chunk
+ * Used to handle response data
+ */
 static int callback_on_data_chunk_recv(nghttp2_session * session, uint8_t flags, int32_t stream_id, const uint8_t * data, size_t len, void * user_data)
 {
 	struct h2client_connection_handle * handle = user_data;
@@ -787,6 +719,10 @@ static int callback_on_data_chunk_recv(nghttp2_session * session, uint8_t flags,
 	return 0;
 }
 
+/**
+ * Callback on stream close
+ * Used to mark the steam end
+ */
 static int callback_on_stream_close(nghttp2_session * session, int32_t stream_id, uint32_t error_code, void * user_data)
 {
 	struct h2client_connection_handle * handle = user_data;
@@ -798,6 +734,9 @@ static int callback_on_stream_close(nghttp2_session * session, int32_t stream_id
 	return 0;
 }
 
+/**
+ * Callback on header
+ */
 static int callback_on_header(nghttp2_session * session, const nghttp2_frame * frame, const uint8_t * name, size_t namelen, const uint8_t * value, size_t valuelen, uint8_t flags, void * user_data)
 {
 	struct h2client_connection_handle * handle = user_data;
@@ -805,7 +744,7 @@ static int callback_on_header(nghttp2_session * session, const nghttp2_frame * f
 		case NGHTTP2_HEADERS:
 			if(frame->headers.cat == NGHTTP2_HCAT_RESPONSE && handle->current_request->h2_stream_id == frame->hd.stream_id){
 				//log(INFO, TAG, "Response header: %s:%s", name, value);
-				if(strncmp(":status", (char *)name, namelen) == 0){
+				if(strncmp(h2_header_status, (char *)name, namelen) == 0){
 					// status item
 					int status = strtol((char *)value, NULL, 10);
 					handle->current_request->original_request->status = status;
@@ -869,8 +808,8 @@ static struct h2client_connection_handle * request_new_connection(const struct h
 		memcpy(handle->server.service, url->service, url->service_length);
 		handle->server.service[url->service_length] = '\0';
 
-		handle->id = new_connection_id++;
-		log(INFO, TAG, "Prepped connection: %s://%s:%s with ID: %u", handle->server.protocol, handle->server.host, handle->server.service, handle->id);
+		handle->conn.id = new_connection_id++;
+		log(INFO, TAG, "Prepped connection: %s://%s:%s with ID: %u", handle->server.protocol, handle->server.host, handle->server.service, handle->conn.id);
 
 		// Real connection is handled by h2_task
 		handle->state = CONN_CONFIGURED;
@@ -977,7 +916,7 @@ static struct h2client_connection_handle * get_idle_store()
 
 	if(xSemaphoreTake(oldest->semaphore, ms_to_ticks(H2CLIENT_TIMEOUT_ACQ_SEMAPHORE))){
 		if(oldest->current_request == NULL && uxQueueMessagesWaiting(oldest->request_queue) == 0){
-			log(INFO, TAG, "Cleanup idle connection %d", oldest->id);
+			log(INFO, TAG, "Cleanup idle connection %d", oldest->conn.id);
 			free_connection_handle(oldest);
 			return oldest;
 		}
@@ -1001,27 +940,27 @@ static void free_connection_handle(struct h2client_connection_handle * handle)
 		if(handle->current_request != NULL){
 			handle->current_request->error = true;
 			xSemaphoreGive(handle->current_request->wait_semaphore);
-			log(WARNING, TAG, "Connection %d: Cancelled current request", handle->id);
+			log(WARNING, TAG, "Connection %d: Cancelled current request", handle->conn.id);
 		}
 
 		// If items in the queue, cleanup
 		while(xQueueReceive(handle->request_queue, &r, 0)){
 			r->error = true;
 			xSemaphoreGive(r->wait_semaphore);
-			log(WARNING, TAG, "Connection %d: Cancelled request in queue", handle->id);
+			log(WARNING, TAG, "Connection %d: Cancelled request in queue", handle->conn.id);
 		}
 
 		if(handle->h2_session != NULL){
 			nghttp2_session_del(handle->h2_session);
 			handle->h2_session = NULL;
 		}
-		if(handle->ssl != NULL){
-			SSL_free(handle->ssl);
-			handle->ssl = NULL;
+		if(handle->conn.ssl != NULL){
+			SSL_free(handle->conn.ssl);
+			handle->conn.ssl = NULL;
 		}
-		if(handle->sockfd >= 0){
-			close(handle->sockfd);
-			handle->sockfd = -1;
+		if(handle->conn.sockfd >= 0){
+			close(handle->conn.sockfd);
+			handle->conn.sockfd = -1;
 		}
 
 		free(handle->server.protocol);
