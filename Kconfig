@@ -1,10 +1,33 @@
 menu "h2 Client/Server configuration"
 
 config H2CLIENT_CONCURRENT_CONNECTIONS
-	int "h2 client concurrent connections"
+	int "h2 client maximum concurrent connections"
 		default 2
 		help
 			The maximum number of concurrent connections that are kept open for the
 			h2 client.
+
+config H2CLIENT_TASK_STACKSIZE
+	int "h2 client task stack size"
+		default 18432
+		help
+			The reserved amount of memory for the h2 client stack size. Note that
+			this value has to be higher than the CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN
+			value.
+
+
+config H2SERVER_CONNECTIONS_MAX
+	int "h2 server maximum concurrent connections"
+		default 2
+		help
+			The maximum number of concurrent connections that can be setup simultaneously
+			to the server.
+
+config H2SERVER_TASK_STACKSIZE
+	int "h2 server task stack size"
+		default 20480
+		help
+			The reserved amount of memory for the h2 server stack. Not that this value
+			has to be higher than the CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN value.
 
 endmenu

@@ -12,7 +12,7 @@
 
 #include "h2log.h"
 
-#define H2CLIENT_TASK_STACKSIZE		(1024 * 18) 	// Stack size in words for the task (http_task) that handles a connection (>16KB required for mbedtls)
+#define H2CLIENT_TASK_STACKSIZE		CONFIG_H2CLIENT_TASK_STACKSIZE // Stack size in words for the task (http_task) that handles a connection (>16KB required for mbedtls)
 #define H2CLIENT_TASK_PRIORITY		5
 #define H2CLIENT_REQUEST_QUEUE_LENGTH	5
 
@@ -36,6 +36,15 @@ enum connection_state{
 	CONN_EMPTY,
 	CONN_CONFIGURED,
 	CONN_CONNECTED
+};
+
+struct parsed_url{
+	const char * protocol;
+	unsigned int protocol_length;
+	const char * host;
+	unsigned int host_length;
+	const char * service;
+	unsigned int service_length;
 };
 
 struct server{
@@ -73,7 +82,7 @@ extern ssize_t h2_nghttp2_callback_send(nghttp2_session * session, const uint8_t
 
 // Local function definitions
 static void task(void *args); // task function
-static struct h2client_connection_handle * request_new_connection(const struct h2_parsed_url * url);
+static struct h2client_connection_handle * request_new_connection(const struct parsed_url * url);
 
 // http2 actions
 bool request(struct h2client_connection_handle * handle, struct h2client_request * request);
@@ -87,43 +96,26 @@ static bool connect_h2(struct h2client_connection_handle * handle);
 static bool h2client_handle(struct h2client_connection_handle * handle);
 
 // nghttp2 callback functions
-//static int callback_send_data(nghttp2_session * session, nghttp2_frame * frame, const uint8_t * framehd, size_t length, nghttp2_data_source * source, void * user_data);
 static int callback_on_frame_recv(nghttp2_session * session, const nghttp2_frame * frame, void * user_data);
-//static int callback_on_invalid_frame_recv(nghttp2_session * session, const nghttp2_frame * frame, int lib_error_code, void * user_data);
 static int callback_on_data_chunk_recv(nghttp2_session * session, uint8_t flags, int32_t stream_id, const uint8_t * data, size_t len, void * user_data);
-//static int callback_before_frame_send(nghttp2_session * session, const nghttp2_frame * frame, void * user_data);
 //static int callback_on_frame_send(nghttp2_session * session, const nghttp2_frame * frame, void * user_data);
-// static int callback_on_frame_not_send(nghttp2_session * session, const nghttp2_frame * frame, int lib_error_code, void * user_data);
 static int callback_on_stream_close(nghttp2_session * session, int32_t stream_id, uint32_t error_code, void * user_data);
 //static int callback_on_begin_headers(nghttp2_session * session, const nghttp2_frame * frame, void * user_data);
 static int callback_on_header(nghttp2_session * session, const nghttp2_frame * frame, const uint8_t * name, size_t namelen, const uint8_t * value, size_t valuelen, uint8_t flags, void * user_data);
-//static int callback_on_header_2(nghttp2_session * session, const nghttp2_frame * frame, nghttp2_rcbuf * name, nghttp2_rcbuf * value, uint8_t flags, void * user_data);
-//static int callback_on_invalid_header(nghttp2_session * session, const nghttp2_frame * frame, const uint8_t * name, size_t namelen, const uint8_t * value, size_t valuelen, uint8_t flags, void * user_data);
-//static int callback_on_invalid_header_2(nghttp2_session * session, const nghttp2_frame * frame, nghttp2_rcbuf * name, nghttp2_rcbuf * value, uint8_t flags, void * user_data);
-//static ssize_t callback_select_padding(nghttp2_session * session, const nghttp2_frame * frame, size_t max_payloadlen, void * user_data);
-//static ssize_t callback_data_source_read_length(nghttp2_session * session, uint8_t frame_type, int32_t stream_id, int32_t session_remote_window_size, int32_t stream_remote_window_size, uint32_t remote_max_frame_size, void * user_data);
-//static int callback_on_begin_frame(nghttp2_session * session, const nghttp2_frame_hd * hd, void * user_data);
-//static int callback_on_extension_chunk_recv(nghttp2_session * session, const nghttp2_frame_hd * hd, const uint8_t * data, size_t len, void * user_data);
-//static int callback_unpack_extension(nghttp2_session * session, void ** payload, const nghttp2_frame_hd * hd, void * user_data);
-//static ssize_t callback_pack_extension(nghttp2_session * session, uint8_t * buf, size_t len, const nghttp2_frame * frame, void * user_data);
-//static int callback_error(nghttp2_session * session, const char * msg, size_t len, void * user_data);
-//static int callback_error_2(nghttp2_session * session, int lib_error_code, const char * msg, size_t len, void * user_data);
 
 // Storage management functions
 static struct h2client_connection_handle * get_store(const char * protocol, const char * host, const char * service);
-static struct h2client_connection_handle * get_store_by_parsed_url(const struct h2_parsed_url * url);
+static struct h2client_connection_handle * get_store_by_parsed_url(const struct parsed_url * url);
 static struct h2client_connection_handle * get_empty_store();
 static struct h2client_connection_handle * get_idle_store();
 static void free_connection_handle(struct h2client_connection_handle * handle);
 
+// Helper functions
+bool parse_url(const char * url, struct parsed_url * output);
 
 // handler functions for the response and request data
 static ssize_t handle_request_data(nghttp2_session *session, int32_t stream_id, uint8_t *buf, size_t length, uint32_t *data_flags, nghttp2_data_source *source, void *user_data);
 static int handle_response_data(struct h2client_connection_handle * handle, const char * data, size_t len, int flags);
-/*
-static void copy_to_responsebody_buffer(struct h2_responsebody * r, const char * data, size_t len);
-static int copy_from_requestbody_buffer(struct h2_requestbody * r, char * buf, const size_t len, bool * finished);
-*/
 
 // Local const variables
 static const char * TAG = "h2client";
@@ -136,7 +128,7 @@ static volatile unsigned int new_connection_id = 0; // TODO: Add semaphore for t
 static SSL_CTX * ssl_ctx = NULL;
 // The callbacks structure can be used to setup multiple session, it can also be created
 // every time a session is created, but this pollutes the heap more (with the downside that this
-// takes memory continously)
+// takes memory continuously)
 static nghttp2_session_callbacks * nghttp2_callbacks = NULL;
 
 /**
@@ -229,14 +221,14 @@ void h2client_deinitialize(void)
 
 /**
  * Perform a synchronous h2 request
- * @param request Pointer to the h2_request stucture.
+ * @param request Pointer to the h2_request structure.
  * @return true if no error is detected during execution
  */
 bool h2client_do_request(struct h2client_request * request)
 {
-	struct h2_parsed_url server;
+	struct parsed_url server;
 
-	if(!h2_parse_url(request->server_url, &server)){
+	if(!parse_url(request->server_url, &server)){
 		log(ERROR, TAG, "Invalid server url: %s", request->server_url);
 		return false;
 	}
@@ -317,7 +309,7 @@ bool h2client_do_request(struct h2client_request * request)
  * @param protocol The protocol string
  * @param host The host string
  * @param service The service of the connection (port)
- * @return true if disconnect was successfull
+ * @return true if disconnect was successful
  */
 bool h2client_disconnect(const char * protocol, const char * host, const char * service)
 {
@@ -528,12 +520,12 @@ static bool connect_ssl(struct h2client_connection_handle * handle)
 /**
  * Setup http2 connection
  * @param handle Connection handle
- * @return true if ssl negotiation is ok
+ * @return true if SSL negotiation is OK
  */
 static bool connect_h2(struct h2client_connection_handle * handle)
 {
 	if(nghttp2_session_client_new(&handle->h2_session, nghttp2_callbacks, handle) != 0){
-		log(ERROR, TAG, "Connecion %d: Unable to start new session", handle->conn.id);
+		log(ERROR, TAG, "Connection %d: Unable to start new session", handle->conn.id);
 		return false;
 	}
 
@@ -764,12 +756,12 @@ static int callback_on_header(nghttp2_session * session, const nghttp2_frame * f
 
 /**
  * Request a new connection.
- * The real connectionis made into the h2client task()
+ * The real connection is created inside the h2client task()
  * @param url A parsed URL structure. Data from this structure is copied to the handle.
  * @return If new connection is configured, a pointer to the connection_handle (which is locked), if
  * 	the connection can not be configured, NULL is returned.
  */
-static struct h2client_connection_handle * request_new_connection(const struct h2_parsed_url * url)
+static struct h2client_connection_handle * request_new_connection(const struct parsed_url * url)
 {
 	struct h2client_connection_handle * handle = get_empty_store();
 
@@ -779,7 +771,7 @@ static struct h2client_connection_handle * request_new_connection(const struct h
 	}
 
 	if(handle != NULL){
-		// Emmpty handle found
+		// Empty handle found
 
 		// Copy URL
 		handle->server.protocol = malloc(url->protocol_length + 1);
@@ -851,11 +843,11 @@ static struct h2client_connection_handle * get_store(const char * protocol, cons
  * Get a connection handle.
  * If a proper handle is retrieved, it is locked, so make sure that you always give back the
  * semaphore after use!
- * @param url A structure with the parsed url
+ * @param url A structure with the parsed URL
  * @return If a handle is found, a pointer to the connection_handle (which is locked), if
  * 	connection is not found, NULL is returned
  */
-static struct h2client_connection_handle * get_store_by_parsed_url(const struct h2_parsed_url * url)
+static struct h2client_connection_handle * get_store_by_parsed_url(const struct parsed_url * url)
 {
 	unsigned int i;
 	for(i = 0; i < (sizeof(connections) / sizeof(connections[0])); i++){
@@ -972,5 +964,124 @@ static void free_connection_handle(struct h2client_connection_handle * handle)
 
 		log(INFO, TAG, "free done");
 		handle->state = CONN_EMPTY;
+}
+
+/**
+ * Helper functions
+ */
+
+/**
+ * Split URL string into host as port. Does not do anything with the path
+ * Note that no new memory is allocated, pointers in the URL string are used instead,
+ * so make sure the string keep to exist if the res is used.
+ * @param url The URL string
+ * @param res Pointer where to store the result
+ * @return true if parsing goes well, otherwise false
+ */
+bool parse_url(const char * url, struct parsed_url * output)
+{
+	// We only interested in https
+	size_t len, i, offset, tmp_len;
+	const char * tmp;
+
+	len = strlen(url);
+	if(len < 9 || memcmp("https://", url, 8) != 0){
+		return false;
+	}
+	// set protocol
+	output->protocol = url;
+	output->protocol_length = 5;
+
+	offset = 8;
+	tmp = &(url[offset]);
+	tmp_len = 0;
+	if (url[offset] == '['){
+		// IPv6 literal address
+		offset++;
+		tmp++;
+		for(i = offset; i < len; i++){
+			if (url[i] == ']'){
+				tmp_len = i - offset;
+				offset = i + 1;
+				break;
+			}
+		}
+	} else {
+		// IPv4 or hostname
+		const char delims[] = ":/?#";
+		for(i = offset; i < len; i++){
+			if(strchr(delims, url[i]) != NULL){
+				break;
+			}
+		}
+		tmp_len = i - offset;
+		offset = i;
+	}
+	if(tmp_len == 0){
+		return false;
+	}
+	// set host
+	output->host = tmp;
+	output->host_length = tmp_len;
+
+	tmp_len = 0;
+	if(offset < len && url[offset] == ':') {
+		// port
+		const char delims[] = "/?#";
+		offset++;
+		tmp = &(url[offset]);
+		for(i = offset; i < len; i++){
+			if(strchr(delims, url[i]) != NULL){
+				// delimiter found
+				break;
+			}
+			if(url[i] < '0' || url[i] > '9'){
+				// Invalid characters in port
+				return false;
+			}
+			if(i - offset > 4){
+				// Port has more than 5 characters
+				// this should not happen (2^16 max)
+				return false;
+			}
+			if(i - offset == 4){
+				// port should not be higher then 2^16 - 1 = 65535
+				if(url[offset] > '6'){
+					return false;
+				}
+				if(url[offset] == '6' && url[offset + 1] > '5'){
+					return false;
+				}
+				if(url[offset] == '6' && url[offset + 1] == '5' && url[offset + 2] > '5'){
+					return false;
+				}
+				if(url[offset] == '6' && url[offset + 1] == '5' && url[offset + 2] == '5' && url[offset + 3] > '3'){
+					return false;
+				}
+				if(url[offset] == '6' && url[offset + 1] == '5' && url[offset + 2] == '5' && url[offset + 3] == '3' && url[offset + 4] > '5'){
+					return false;
+				}
+			}
+		}
+		tmp_len = i - offset;
+		if (tmp_len == 0) {
+			return false;
+		}
+		offset = i;
+	}else{
+		// If no port has been set, assume https
+		tmp = h2_default_port;
+		tmp_len = 3;
+	}
+	// set port
+	output->service = tmp;
+	output->service_length = tmp_len;
+
+	if(offset < len){
+		// the URL contains more than only the server address
+		// TODO: we can also just return. Choices.
+		return false;
+	}
+	return true;
 }
 

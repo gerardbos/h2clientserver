@@ -65,6 +65,8 @@ enum h2_http_status {
 	H2_REQUEST_TIMEOUT = 408,
 };
 
+extern const char h2_default_port[4];
+
 extern const char h2_http_status_200[4];
 extern const char h2_http_status_400[4];
 extern const char h2_http_status_403[4];
@@ -72,17 +74,8 @@ extern const char h2_http_status_404[4];
 extern const char h2_http_status_405[4];
 extern const char h2_http_status_408[4];
 
-struct h2_parsed_url{
-	const char * protocol;
-	unsigned int protocol_length;
-	const char * host;
-	unsigned int host_length;
-	const char * service;
-	unsigned int service_length;
-};
-
 /**
- * This struction must be used as the first items of structures dat are passed as user_data to the
+ * This structure must be used as the first items of structures that are passed as user_data to the
  * nghttp2 callbacks (especially send_callback and recv_callback). So that these functions can be
  * shared over the client and server implementation
  */
@@ -104,6 +97,5 @@ extern const char h2_header_cachecontrol[14];
 const char * h2_method_to_string(enum h2_method m);
 enum h2_method h2_method_from_string(const char * method, unsigned int length);
 const char * h2_http_status_to_string(enum h2_http_status s);
-bool h2_parse_url(const char * url, struct h2_parsed_url * output);
 
 #endif /* end of include guard: __H2_H__ */

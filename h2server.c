@@ -13,12 +13,12 @@
 
 #include "h2log.h"
 
-#define H2SERVER_TASK_STACKSIZE		(1024 * 20) 	// Stack size in words for the task (>16KB required for mbedtls)
+#define H2SERVER_TASK_STACKSIZE		CONFIG_H2SERVER_TASK_STACKSIZE 	// Stack size in words for the task (>16KB required for mbedtls)
 #define H2SERVER_TASK_PRIORITY		5
 
 #define H2SERVER_TIMEOUT_ACQ_SEMAPHORE	500		// Timeout to wait for acquiring a lock to the server/connection bookkeeping
 #define H2SERVER_LISTEN_BACKLOG		2
-#define H2SERVER_CONNECTIONS_MAX	2
+#define H2SERVER_CONNECTIONS_MAX	CONFIG_H2SERVER_CONNECTIONS_MAX
 
 // Convert ms to ticks (round down)
 #define ms_to_ticks(d_ms)		(TickType_t)(d_ms / portTICK_PERIOD_MS)
@@ -72,27 +72,12 @@ extern ssize_t h2_nghttp2_callback_recv(nghttp2_session * session, uint8_t * buf
 extern ssize_t h2_nghttp2_callback_send(nghttp2_session * session, const uint8_t * data, size_t length, int flags, void * user_data);
 
 // nghttp2 callbacks
-//static int callback_send_data(nghttp2_session * session, nghttp2_frame * frame, const uint8_t * framehd, size_t length, nghttp2_data_source * source, void * user_data);
 static int callback_on_frame_recv(nghttp2_session * session, const nghttp2_frame * frame, void * user_data);
-//static int callback_on_invalid_frame_recv(nghttp2_session * session, const nghttp2_frame * frame, int lib_error_code, void * user_data);
 static int callback_on_data_chunk_recv(nghttp2_session * session, uint8_t flags, int32_t stream_id, const uint8_t * data, size_t len, void * user_data);
-//static int callback_before_frame_send(nghttp2_session * session, const nghttp2_frame * frame, void * user_data);
 //static int callback_on_frame_send(nghttp2_session * session, const nghttp2_frame * frame, void * user_data);
-//static int callback_on_frame_not_send(nghttp2_session * session, const nghttp2_frame * frame, int lib_error_code, void * user_data);
 static int callback_on_stream_close(nghttp2_session * session, int32_t stream_id, uint32_t error_code, void * user_data);
 static int callback_on_begin_headers(nghttp2_session * session, const nghttp2_frame * frame, void * user_data);
 static int callback_on_header(nghttp2_session * session, const nghttp2_frame * frame, const uint8_t * name, size_t namelen, const uint8_t * value, size_t valuelen, uint8_t flags, void * user_data);
-//static int callback_on_header_2(nghttp2_session * session, const nghttp2_frame * frame, nghttp2_rcbuf * name, nghttp2_rcbuf * value, uint8_t flags, void * user_data);
-//static int callback_on_invalid_header(nghttp2_session * session, const nghttp2_frame * frame, const uint8_t * name, size_t namelen, const uint8_t * value, size_t valuelen, uint8_t flags, void * user_data);
-//static int callback_on_invalid_header_2(nghttp2_session * session, const nghttp2_frame * frame, nghttp2_rcbuf * name, nghttp2_rcbuf * value, uint8_t flags, void * user_data);
-//static ssize_t callback_select_padding(nghttp2_session * session, const nghttp2_frame * frame, size_t max_payloadlen, void * user_data);
-//static ssize_t callback_data_source_read_length(nghttp2_session * session, uint8_t frame_type, int32_t stream_id, int32_t session_remote_window_size, int32_t stream_remote_window_size, uint32_t remote_max_frame_size, void * user_data);
-//static int callback_on_begin_frame(nghttp2_session * session, const nghttp2_frame_hd * hd, void * user_data);
-//static int callback_on_extension_chunk_recv(nghttp2_session * session, const nghttp2_frame_hd * hd, const uint8_t * data, size_t len, void * user_data);
-//static int callback_unpack_extension(nghttp2_session * session, void ** payload, const nghttp2_frame_hd * hd, void * user_data);
-//static ssize_t callback_pack_extension(nghttp2_session * session, uint8_t * buf, size_t len, const nghttp2_frame * frame, void * user_data);
-//static int callback_error(nghttp2_session * session, const char * msg, size_t len, void * user_data);
-//static int callback_error_2(nghttp2_session * session, int lib_error_code, const char * msg, size_t len, void * user_data);
 
 static ssize_t response_callback_wrapper(nghttp2_session * session, int32_t stream_id, uint8_t * buf, size_t length, uint32_t * data_flags, nghttp2_data_source * source, void * user_data);
 
@@ -122,7 +107,7 @@ static volatile unsigned int new_connection_id = 0; // TODO: Add semaphore for t
 static SSL_CTX * ssl_ctx = NULL;
 // The callbacks structure can be used to setup multiple session, it can also be created
 // every time a session is created, but this pollutes the heap more (with the downside that this
-// takes memory continously)
+// takes memory continuously)
 static nghttp2_session_callbacks * nghttp2_callbacks = NULL;
 // servers
 static struct h2server_server server;
@@ -130,14 +115,14 @@ static struct h2server_server server;
 static struct h2server_connection connections[H2SERVER_CONNECTIONS_MAX];
 
 /**
- * Initialize the basics for all server that ar running on this system.
+ * Initialize the basics for all servers that are running on this system.
  * Note that only one certificate set can be used for all servers, as the certificate has to be connected to the SSL
- * context. If we connect it to the ssl object, it is much slower (too slow).
+ * context. If we connect it to the SSL object, it is much slower (too slow).
  * @param certificate A PEM encoded certificate string
  * @param certificate_len The length of the certificate string
  * @param private_key A PEM encoded private key string
  * @param private_key_len The length of the private key
- * @return H2_ERROR_OK if everyting is ok.
+ * @return H2_ERROR_OK if everything is OK.
  */
 int h2server_initialize(const char * certificate, size_t certificate_len, const char * private_key, size_t private_key_len)
 {
@@ -165,7 +150,7 @@ int h2server_initialize(const char * certificate, size_t certificate_len, const 
 	// initialize SSL context used for all connection
 	ssl_ctx = SSL_CTX_new(TLSv1_2_server_method());
 	if(ssl_ctx == NULL){
-		log(ERROR, TAG, "Cannot initialize ssl context");
+		log(ERROR, TAG, "Cannot initialize SSL context");
 		goto error_ssl_ctx;
 	}
 
@@ -287,7 +272,7 @@ error_get_semaphore:
 /**
  * Stop the server
  * Note that this function only triggers a stop action. The real closing of the
- * server is done in a seperate thread.
+ * server is done in a separate thread.
  * @param handle A pointer to the server handle
  */
 bool h2server_stop(struct h2server_handle * handle_)
@@ -304,11 +289,11 @@ bool h2server_stop(struct h2server_handle * handle_)
 }
 
 /**
- * Register a new endpont for server handle_
- * This fucntion copies all the data from endpoint, so the caller can discard the data later.
+ * Register a new endpoint for server handle_
+ * This function copies all the data from endpoint, so the caller can discard the data later.
  * @param handle_ A handle to the server
  * @param endpoint The endpoint to register.
- * @return true if the registration is ok.
+ * @return true if the registration is OK.
  */
 bool h2server_register_endpoint(struct h2server_handle * handle_, struct h2server_endpoint * endpoint)
 {
@@ -473,8 +458,6 @@ static void check_and_accept_new_connections(struct h2server_server * handle)
 						found = true;
 						if(!connection_setup(&connections[i], handle, sockfd))
 							log(ERROR, TAG, "Unable to setup connection");
-					}else{
-						log(WARNING, TAG, "given connection[%d]", i);
 					}
 					xSemaphoreGive(connections[i].semaphore);
 				}else{
@@ -534,10 +517,10 @@ static void server_cleanup(struct h2server_server * handle)
  * Setup a new connection. This function also handles the SSL setup.
  * Note that the caller of this function is required to have the mutex to the
  * connection.
- * @param conection Handle to the connection
- * @param server Handle to the server the connection is comming from
+ * @param connection Handle to the connection
+ * @param server Handle to the server the connection is originating from
  * @param new_sockfd The new socket for this connection
- * @return true if the connection setup was ok
+ * @return true if the connection setup was OK
  */
 static bool connection_setup(struct h2server_connection * connection, struct h2server_server * server, int new_sockfd)
 {
@@ -661,8 +644,8 @@ static void connection_close_and_cleanup(struct h2server_connection * connection
 
 /**
  * Handle the connection.
- * This fucntion manages reads and writes to this connection and verifies that the
- * other end wants to keep the connection open. If not, iti will initiate a connection close.
+ * This function manages reads and writes to this connection and verifies that the
+ * other end wants to keep the connection open. If not, it will initiate a connection close.
  * Note that the caller of this function is required to have the mutex to the
  * connection.
  * @param connection Pointer to the connection
@@ -760,7 +743,7 @@ static int callback_on_frame_recv(nghttp2_session * session, const nghttp2_frame
 		}
 
 		if(err != 0)
-			log(ERROR, TAG, "Connection %u: Error submiting response (%d)", connection->conn.id, err);
+			log(ERROR, TAG, "Connection %u: Error submitting response (%d)", connection->conn.id, err);
 	}
 
 	return 0;
@@ -821,7 +804,7 @@ static int callback_on_data_chunk_recv(nghttp2_session * session, uint8_t flags,
 /**
  * Callback when a stream close is requested.
  * This function frees the stream and removes it from the connection.
- * @param user_data This shall be a pyyointer to the h2server_connection structure.
+ * @param user_data This shall be a pointer to the h2server_connection structure.
  */
 static int callback_on_stream_close(nghttp2_session * session, int32_t stream_id, uint32_t error_code, void * user_data)
 {
@@ -945,7 +928,7 @@ static ssize_t response_callback_wrapper(nghttp2_session *session, int32_t strea
  * Add item to the double linked list of the connection
  * @param connection The connection where to add the stream
  * @param item The item to add
- * @return true if no error occured
+ * @return true if no error occurred
  */
 static void connection_add_to_streams(struct h2server_connection * connection, struct h2server_stream_data * item)
 {
@@ -958,7 +941,7 @@ static void connection_add_to_streams(struct h2server_connection * connection, s
  * Remove item from double linked list of the connection
  * @param connection The connection where to remove the stream
  * @param item Item to remove
- * @return true if no error occured
+ * @return true if no error occurred
  */
 static void connection_remove_from_streams(struct h2server_connection * connection, struct h2server_stream_data * item)
 {
@@ -1014,5 +997,4 @@ static struct h2server_endpoint * search_endpoint(struct h2server_server * serve
 
 	return endpoint;
 }
-
 
