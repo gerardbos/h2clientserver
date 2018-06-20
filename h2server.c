@@ -96,6 +96,7 @@ static bool connection_setup(struct h2server_connection * connection, struct h2s
 static void h2server_handle_connection(struct h2server_connection * connection);
 static void connection_close(struct h2server_connection * connection);
 static void connection_close_and_cleanup(struct h2server_connection * connection);
+static void stream_cleanup(struct h2server_stream_data * stream);
 
 // Local const variables
 static const char * TAG = "h2server";
@@ -617,7 +618,7 @@ static void connection_close_and_cleanup(struct h2server_connection * connection
 		struct h2server_stream_data * next = s->next;
 
 		connection_remove_from_streams(connection, s);
-		free(s);
+		stream_cleanup(s);
 		s = next;
 	}
 	nghttp2_session_del(connection->h2_session);
@@ -640,6 +641,18 @@ static void connection_close_and_cleanup(struct h2server_connection * connection
 	}
 
 	connection->state = CONN_EMPTY;
+}
+
+/**
+ * Clean up the stream structure
+ * @param stream Pointer to the stream object
+ */
+static void stream_cleanup(struct h2server_stream_data * stream)
+{
+	if(stream->request_path != NULL)
+		free(stream->request_path);
+
+	free(stream);
 }
 
 /**
@@ -814,7 +827,7 @@ static int callback_on_stream_close(nghttp2_session * session, int32_t stream_id
 		return 0;
 
 	connection_remove_from_streams(connection, s);
-	free(s);
+	stream_cleanup(s);
 	return 0;
 }
 
