@@ -9,8 +9,7 @@
 
 #define h2client_request_initialize()	{ \
 	.method = H2_GET, \
-	.server_url = NULL, \
-	.path = NULL, \
+	.url = NULL, \
 	.requestbody.method = H2_HANDLEBODY_NONE, \
 	.requestbody.body = NULL, \
 	.requestbody.size = 0, \
@@ -23,11 +22,10 @@
 	.responsebody.callback = NULL \
 }
 
-#define h2client_do_request_simple(r_method, r_server_url, r_path)	{ \
+#define h2client_do_request_simple(r_method, r_url)	{ \
 	struct h2client_request r = h2client_request_initialize(); \
 	r.method = r_method; \
-	r.server_url = r_server_url; \
-	r.path = r_path; \
+	r.url = r_url; \
 	h2client_do_request(&r); \
 }
 
@@ -50,8 +48,7 @@ struct h2client_responsebody {
 
 struct h2client_request{
 	enum h2_method method;
-	const char * server_url;
-	const char * path;
+	const char * url;
 	struct h2client_requestbody requestbody;
 	struct h2client_responsebody responsebody;
 	int status;

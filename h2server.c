@@ -780,7 +780,7 @@ static int callback_on_data_chunk_recv(nghttp2_session * session, uint8_t flags,
 		return 0;
 
 	if(s->endpoint->callback_request != NULL){
-		s->endpoint->callback_request((char *)data, len, flags & NGHTTP2_FLAG_END_STREAM, &(s->private_data));
+		s->endpoint->callback_request((char *)data, len, (flags & NGHTTP2_FLAG_END_STREAM) != 0, &(s->private_data));
 	}else{
 		log(INFO, TAG, "Connection %u: No request data callback set", connection->conn.id);
 	}

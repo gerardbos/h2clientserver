@@ -45,6 +45,8 @@ struct parsed_url{
 	unsigned int host_length;
 	const char * service;
 	unsigned int service_length;
+	const char * path;
+	unsigned int path_length;
 };
 
 struct server{
@@ -69,6 +71,7 @@ struct h2client_connection_handle{
 struct h2client_request_internal{
 	struct h2client_request * original_request;
 	int h2_stream_id;
+	const char * path;
 	SemaphoreHandle_t wait_semaphore;
 #ifdef CONFIG_SUPPORT_STATIC_ALLOCATION
 	StaticSemaphore_t wait_semaphore_store; // this way the semaphore is allocated on the stack, reducing memory fragmentation
@@ -85,7 +88,7 @@ static void task(void *args); // task function
 static struct h2client_connection_handle * request_new_connection(const struct parsed_url * url);
 
 // http2 actions
-bool request(struct h2client_connection_handle * handle, struct h2client_request * request);
+static bool request(struct h2client_connection_handle * handle, struct h2client_request_internal * request);
 
 // connection functions
 static bool connect_socket(struct server * url, int * fd);
@@ -119,6 +122,7 @@ static int handle_response_data(struct h2client_connection_handle * handle, cons
 
 // Local const variables
 static const char * TAG = "h2client";
+static const char default_path[] = "/";
 
 // Local variables
 static TaskHandle_t task_handle;
@@ -226,28 +230,29 @@ void h2client_deinitialize(void)
  */
 bool h2client_do_request(struct h2client_request * request)
 {
-	struct parsed_url server;
+	struct parsed_url url;
 
-	if(!parse_url(request->server_url, &server)){
-		log(ERROR, TAG, "Invalid server url: %s", request->server_url);
+	if(!parse_url(request->url, &url)){
+		log(ERROR, TAG, "Invalid server url: %s", request->url);
 		return false;
 	}
 
 	// do request here
-	struct h2client_connection_handle * handle = get_store_by_parsed_url(&server);
+	struct h2client_connection_handle * handle = get_store_by_parsed_url(&url);
 	if(handle == NULL){
-		handle = request_new_connection(&server);
+		handle = request_new_connection(&url);
 		if(handle == NULL){
-			log(INFO, TAG, "Error setting up connection config: %s", request->server_url);
+			log(INFO, TAG, "Error setting up connection config for: %s", request->url);
 			return false;
 		}
 	}else{
-		log(INFO, TAG, "Reusing existing connection: %s", request->server_url);
+		log(INFO, TAG, "Reusing existing connection for: %s", request->url);
 	}
 	handle->last_used = esp_timer_get_time();
 
 	struct h2client_request_internal r = h2client_request_internal_initialize();
 	struct h2client_request_internal * r_ptr = &r;
+	r.path = url.path;
 	r.original_request = request;
 	// create semaphore for wait
 #ifdef CONFIG_SUPPORT_STATIC_ALLOCATION
@@ -298,7 +303,7 @@ bool h2client_do_request(struct h2client_request * request)
 		vSemaphoreDelete(r.wait_semaphore);
 		return !error;
 	}else{
-		log(ERROR, TAG, "Queue full for connection: %s", request->server_url);
+		log(ERROR, TAG, "Queue full for connection: %s", request->url);
 		xSemaphoreGive(handle->semaphore);
 		return false;
 	}
@@ -367,10 +372,10 @@ static void task(void *args)
 								log(INFO, TAG, "Connection %u: [%s] %s",
 										handle->conn.id,
 										h2_method_to_string(handle->current_request->original_request->method),
-										handle->current_request->original_request->path);
+										handle->current_request->path);
 
 								// do GET, PUT or POST request
-								request(handle, handle->current_request->original_request);
+								request(handle, handle->current_request);
 							}
 						}
 						break;
@@ -399,9 +404,9 @@ static void task(void *args)
  * @param request The client request structure defining the request
  * @return true if the request was prepared and submitted without error.
  */
-bool request(struct h2client_connection_handle * handle, struct h2client_request * request)
+static bool request(struct h2client_connection_handle * handle, struct h2client_request_internal * request)
 {
-	const char * m = h2_method_to_string(request->method);
+	const char * m = h2_method_to_string(request->original_request->method);
 	int stream_id = -1;
 	// make headers 1 item longer for the content type, if available
 	unsigned int hdrs_items = 4;
@@ -412,19 +417,19 @@ bool request(struct h2client_connection_handle * handle, struct h2client_request
 		h2_make_nv(h2_header_path, sizeof(h2_header_path) - 1, request->path, strlen(request->path))
 	};
 
-	if(request->requestbody.content_type != NULL){
-		h2_assign_nv(&hdrs[hdrs_items++], h2_header_contenttype, sizeof(h2_header_contenttype) - 1, request->requestbody.content_type, strlen(request->requestbody.content_type));
+	if(request->original_request->requestbody.content_type != NULL){
+		h2_assign_nv(&hdrs[hdrs_items++], h2_header_contenttype, sizeof(h2_header_contenttype) - 1, request->original_request->requestbody.content_type, strlen(request->original_request->requestbody.content_type));
 	}
 
-	if(request->method == H2_GET){
+	if(request->original_request->method == H2_GET){
 		stream_id = nghttp2_submit_request(handle->h2_session, NULL, hdrs, hdrs_items, NULL, NULL);
-	}else if(request->method== H2_PUT || request->method == H2_POST){
+	}else if(request->original_request->method== H2_PUT || request->original_request->method == H2_POST){
 		nghttp2_data_provider p;
 		p.read_callback = handle_request_data;
 		p.source.ptr = NULL; // not set, is already available in the handle->current_request (user_data)
 		stream_id = nghttp2_submit_request(handle->h2_session, NULL, hdrs, hdrs_items, &p, NULL);
 	}else{
-		log(ERROR, TAG, "Connection %u: Unknown http2 method: %d", handle->conn.id, request->method);
+		log(ERROR, TAG, "Connection %u: Unknown http2 method: %d", handle->conn.id, request->original_request->method);
 	}
 
 	if(stream_id < 0){
@@ -1079,8 +1084,12 @@ bool parse_url(const char * url, struct parsed_url * output)
 
 	if(offset < len){
 		// the URL contains more than only the server address
-		// TODO: we can also just return. Choices.
-		return false;
+		output->path = &(url[offset]);
+		output->path_length = len - offset;
+	}else{
+		// the URL only contains the server address
+		output->path = default_path;
+		output->path_length = sizeof(default_path) - 1;
 	}
 	return true;
 }
