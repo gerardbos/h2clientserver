@@ -11,7 +11,7 @@
 
 #include <string.h>
 
-#include "h2log.h"
+#include "log.h"
 
 #define H2SERVER_TASK_STACKSIZE		CONFIG_H2SERVER_TASK_STACKSIZE 	// Stack size in words for the task (>16KB required for mbedtls)
 #define H2SERVER_TASK_PRIORITY		5

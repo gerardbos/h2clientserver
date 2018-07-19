@@ -4,6 +4,7 @@ HTTP2 (h2) client/server to use on the ESP32 using the esp-idf environment.
 ## Dependencies
 - [ESP-IDF](https://github.com/espressif/esp-idf)
 - [Nghttp2](https://nghttp2.org/) (Already part of ESP-IDF)
+- [ESP32log](https://github.com/gerardbos/esp32log)
 
 ## Client
 Simple h2client.

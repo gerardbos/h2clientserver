@@ -10,7 +10,7 @@
 #include <openssl/ssl.h>
 #include <nghttp2/nghttp2.h>
 
-#include "h2log.h"
+#include "log.h"
 
 #define H2CLIENT_TASK_STACKSIZE		CONFIG_H2CLIENT_TASK_STACKSIZE // Stack size in words for the task (http_task) that handles a connection (>16KB required for mbedtls)
 #define H2CLIENT_TASK_PRIORITY		5

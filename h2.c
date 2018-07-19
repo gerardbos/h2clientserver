@@ -1,7 +1,7 @@
 #include "h2.h"
 
 #include <string.h>
-#include "h2log.h"
+#include "log.h"
 
 #include <nghttp2/nghttp2.h>
 
