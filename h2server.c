@@ -331,7 +331,6 @@ bool h2server_register_endpoint(struct h2server_handle * handle_, struct h2serve
 						strcpy((char *)write->name, read->name);
 						strcpy((char *)write->value, read->value);
 
-						log(INFO, TAG, "add header: %s: %s", write->name, write->value);
 						h2server_endpoint_add_header(&handle->endpoints[i], write);
 						read = read->next;
 					}else{
