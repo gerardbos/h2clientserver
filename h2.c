@@ -29,10 +29,14 @@ const char h2_header_status[] = ":status";
 const char h2_header_contenttype[] = "content-type";
 const char h2_header_cachecontrol[] = "cache-control";
 
+const char h2_header_common_contenttype_json[] = "application/json";
+const char h2_header_common_contenttype_html[] = "text/html";
+const char h2_header_common_contenttype_text[] = "text/plain";
+const char h2_header_common_cachecontrol_nocache[] = "no-cache";
+
 static const char h2_method_get[] = "GET";
 static const char h2_method_put[] = "PUT";
 static const char h2_method_post[] = "POST";
-
 
 /**
  * Get the string representation of method m

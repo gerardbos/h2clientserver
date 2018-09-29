@@ -94,6 +94,11 @@ extern const char h2_header_status[8];
 extern const char h2_header_contenttype[13];
 extern const char h2_header_cachecontrol[14];
 
+extern const char h2_header_common_contenttype_json[17];
+extern const char h2_header_common_contenttype_html[10];
+extern const char h2_header_common_contenttype_text[11];
+extern const char h2_header_common_cachecontrol_nocache[9];
+
 const char * h2_method_to_string(enum h2_method m);
 enum h2_method h2_method_from_string(const char * method, unsigned int length);
 const char * h2_http_status_to_string(enum h2_http_status s);
