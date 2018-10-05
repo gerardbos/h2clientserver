@@ -19,7 +19,8 @@
 	.responsebody.buffer = NULL, \
 	.responsebody.buffer_size = 0, \
 	.responsebody.size = 0, \
-	.responsebody.callback = NULL \
+	.responsebody.callback = NULL, \
+	.timeout_ms = 0 \
 }
 
 #define h2client_do_request_simple(r_method, r_url)	{ \
@@ -52,6 +53,7 @@ struct h2client_request{
 	struct h2client_requestbody requestbody;
 	struct h2client_responsebody responsebody;
 	int status;
+	unsigned timeout_ms;
 };
 
 int h2client_initialize(void);

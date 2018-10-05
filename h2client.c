@@ -267,12 +267,16 @@ bool h2client_do_request(struct h2client_request * request)
 
 	if(xQueueSendToBack(handle->request_queue, &r_ptr, (TickType_t)0)){
 		bool error = false;
+		unsigned int timeout_ms = H2CLIENT_TIMEOUT_REQUEST_MS;
+		if(request->timeout_ms > 0){
+			timeout_ms = request->timeout_ms;
+		}
 
 		xSemaphoreGive(handle->semaphore);
 
 		log(INFO, TAG, "Waiting for request to complete");
 
-		if(xSemaphoreTake(r.wait_semaphore, ms_to_ticks(H2CLIENT_TIMEOUT_REQUEST_MS))){
+		if(xSemaphoreTake(r.wait_semaphore, ms_to_ticks(timeout_ms))){
 			error = r.error;
 			log(INFO, TAG, "Request complete");
 
